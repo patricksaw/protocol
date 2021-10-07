@@ -24,6 +24,7 @@ const { ContractMonitor } = require("./src/ContractMonitor");
 const { BalanceMonitor } = require("./src/BalanceMonitor");
 const { CRMonitor } = require("./src/CRMonitor");
 const { SyntheticPegMonitor } = require("./src/SyntheticPegMonitor");
+const { ApiMonitor } = require("./src/ApiMonitor");
 
 // Contract ABIs and network Addresses.
 const { findContractVersion } = require("@uma/core");
@@ -52,6 +53,7 @@ const {
  * @param {Object} tokenPriceFeedConfig Configuration to construct the tokenPriceFeed (balancer or uniswap) price feed object.
  * @param {Object} medianizerPriceFeedConfig Configuration to construct the reference price feed object.
  * @param {Object} denominatorPriceFeedConfig Configuration to construct the denominator price feed object.
+ * @param {String} apiEndpoint Endpoint for API Monitor.
  * @return None or throws an Error.
  */
 async function run({
@@ -68,6 +70,7 @@ async function run({
   tokenPriceFeedConfig,
   medianizerPriceFeedConfig,
   denominatorPriceFeedConfig,
+  apiEndpoint,
 }) {
   try {
     const { hexToUtf8 } = web3.utils;
@@ -88,6 +91,7 @@ async function run({
       tokenPriceFeedConfig,
       medianizerPriceFeedConfig,
       denominatorPriceFeedConfig,
+      apiEndpoint,
     });
 
     const getTime = () => Math.round(new Date().getTime() / 1000);
@@ -353,6 +357,26 @@ async function run({
       });
     }
 
+    /** *************************************
+     *
+     * API Endpoint Runner
+     *
+     ***************************************/
+    if (apiEndpoint) {
+      const maxTimeTillExpiration = monitorConfig.maxTimeTillExpiration;
+      const networker = new Networker(logger);
+
+      const apiMonitor = new ApiMonitor({ logger, networker, getTime, apiEndpoint, maxTimeTillExpiration });
+
+      populateMonitorRunnerHelpers.push(() => {
+        monitorRunners.push(
+          Promise.all([]).then(async () => {
+            await Promise.all([apiMonitor.checkUpcomingExpirations()]);
+          })
+        );
+      });
+    }
+
     // Create a execution loop that will run indefinitely (or yield early if in serverless mode)
     for (;;) {
       await retry(
@@ -393,7 +417,12 @@ async function run({
 }
 async function Poll(callback) {
   try {
-    if (!process.env.OPTIMISTIC_ORACLE_ADDRESS && !process.env.EMP_ADDRESS && !process.env.FINANCIAL_CONTRACT_ADDRESS) {
+    if (
+      !process.env.OPTIMISTIC_ORACLE_ADDRESS &&
+      !process.env.EMP_ADDRESS &&
+      !process.env.FINANCIAL_CONTRACT_ADDRESS &&
+      !process.env.API_ENDPOINT
+    ) {
       throw new Error(
         "Bad environment variables! Specify an OPTIMISTIC_ORACLE_ADDRESS, EMP_ADDRESS or FINANCIAL_CONTRACT_ADDRESS for the location of the contract the bot is expected to interact with."
       );
@@ -439,6 +468,7 @@ async function Poll(callback) {
       //  "volatilityWindow": 600,                           // Length of time (in seconds) to snapshot volatility.
       //  "pegVolatilityAlertThreshold": 0.1,                // Threshold for synthetic peg (identifier) price volatility over `volatilityWindow`.
       //  "syntheticVolatilityAlertThreshold": 0.1,          // Threshold for synthetic token on uniswap price volatility over `volatilityWindow`.
+      //  "maxTimeTillExpiration": 604800,                   // If time till expiration (in seconds) is below this fire the alert.
       //  "logOverrides":{                                   // override specific events log levels.
       //       "deviation":"error",                          // SyntheticPegMonitor deviation alert.
       //       "crThreshold":"error",                        // CRMonitor CR threshold alert.
@@ -465,6 +495,7 @@ async function Poll(callback) {
       medianizerPriceFeedConfig: process.env.MEDIANIZER_PRICE_FEED_CONFIG
         ? JSON.parse(process.env.MEDIANIZER_PRICE_FEED_CONFIG)
         : null,
+      apiEndpoint: process.env.API_ENDPOINT,
     };
 
     await run({ logger: Logger, web3: getWeb3(), ...executionParameters });
